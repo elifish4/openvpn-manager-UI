@@ -1,0 +1,92 @@
+replicaCount: 1
+
+backend:
+  image:
+    repository: docker.io/kokofish/openvpn-manager-backend
+    tag: "latest"
+    pullPolicy: Always
+  port: 8000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+frontend:
+  image:
+    repository: docker.io/kokofish/openvpn-manager-frontend
+    tag: "latest"
+    pullPolicy: Always
+  port: 80
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+ingress:
+  enabled: true
+  className: internal-nginx
+  host: vpn-manager.<YOUR_DOMAIN>.com
+  annotations: {}
+  tls: []
+  #  - secretName: vpn-manager-tls
+  #    hosts:
+  #      - vpn-manager.<YOUR_DOMAIN>.com
+
+# SSH private keys for connecting to VPN servers.
+# Each key here becomes a file in /app/keys/<name>.pem mounted into the backend pod.
+sshKeys: {}
+#  devops-open-vpn-prod: |
+#    -----BEGIN RSA PRIVATE KEY-----
+#    ...
+#    -----END RSA PRIVATE KEY-----
+#  devops-open-vpn-stage: |
+#    -----BEGIN RSA PRIVATE KEY-----
+#    ...
+#    -----END RSA PRIVATE KEY-----
+
+# Alternatively, reference an existing secret that already contains the SSH keys.
+# The secret should have data keys like "devops-open-vpn-prod.pem", "devops-open-vpn-stage.pem"
+existingSshKeysSecret: ""
+
+# VPN server configuration — passed as env vars to the backend.
+vpnServers:
+  server1:
+    name: "Production VPN"
+    host: "1.2.3.4"
+    user: "ubuntu"
+    keyPath: "/app/keys/devops-open-vpn-prod.pem"
+    scriptPath: "/vpn/setup_open_vpn.sh"
+    ovpnDir: "/home/ubuntu"
+    envLabel: "prod"
+  server2:
+    name: "Dev VPN"
+    host: "1.2.3.4"
+    user: "ubuntu"
+    keyPath: "/app/keys/devops-open-vpn-stage.pem"
+    scriptPath: "/vpn/setup_open_vpn.sh"
+    ovpnDir: "/home/ubuntu"
+    envLabel: "dev"
+
+corsOrigins: "*"
+
+admin:
+  username: "admin"
+  password: "changeme"
+  jwtSecret: "change-this-to-a-random-string"
+  slackBotToken: ""
+
+persistence:
+  size: "1Gi"
+  storageClass: "gp2"
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: false
+  name: ""

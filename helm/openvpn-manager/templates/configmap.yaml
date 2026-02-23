@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "openvpn-manager.fullname" . }}-config
+  labels:
+    {{- include "openvpn-manager.labels" . | nindent 4 }}
+data:
+  VPN_SERVER_1_NAME: {{ .Values.vpnServers.server1.name | quote }}
+  VPN_SERVER_1_HOST: {{ .Values.vpnServers.server1.host | quote }}
+  VPN_SERVER_1_USER: {{ .Values.vpnServers.server1.user | quote }}
+  VPN_SERVER_1_KEY_PATH: {{ .Values.vpnServers.server1.keyPath | quote }}
+  VPN_SERVER_1_SCRIPT_PATH: {{ .Values.vpnServers.server1.scriptPath | quote }}
+  VPN_SERVER_1_OVPN_DIR: {{ .Values.vpnServers.server1.ovpnDir | quote }}
+  VPN_SERVER_1_ENV_LABEL: {{ .Values.vpnServers.server1.envLabel | quote }}
+  VPN_SERVER_2_NAME: {{ .Values.vpnServers.server2.name | quote }}
+  VPN_SERVER_2_HOST: {{ .Values.vpnServers.server2.host | quote }}
+  VPN_SERVER_2_USER: {{ .Values.vpnServers.server2.user | quote }}
+  VPN_SERVER_2_KEY_PATH: {{ .Values.vpnServers.server2.keyPath | quote }}
+  VPN_SERVER_2_SCRIPT_PATH: {{ .Values.vpnServers.server2.scriptPath | quote }}
+  VPN_SERVER_2_OVPN_DIR: {{ .Values.vpnServers.server2.ovpnDir | quote }}
+  VPN_SERVER_2_ENV_LABEL: {{ .Values.vpnServers.server2.envLabel | quote }}
+  API_HOST: "0.0.0.0"
+  API_PORT: {{ .Values.backend.port | quote }}
+  CORS_ORIGINS: {{ .Values.corsOrigins | quote }}

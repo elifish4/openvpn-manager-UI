@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "openvpn-manager.backend.name" . }}
+  labels:
+    {{- include "openvpn-manager.labels" . | nindent 4 }}
+    {{- include "openvpn-manager.backend.selectorLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "openvpn-manager.backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "openvpn-manager.backend.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/admin: {{ include (print $.Template.BasePath "/secret-admin.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "openvpn-manager.fullname" . }}-config
+            - secretRef:
+                name: {{ include "openvpn-manager.fullname" . }}-admin
+          env:
+            - name: DATA_DIR
+              value: /app/data
+          volumeMounts:
+            - name: ssh-keys
+              mountPath: /app/keys
+              readOnly: true
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+      volumes:
+        - name: ssh-keys
+          secret:
+            secretName: {{ if .Values.existingSshKeysSecret }}{{ .Values.existingSshKeysSecret }}{{ else }}{{ include "openvpn-manager.fullname" . }}-ssh-keys{{ end }}
+            defaultMode: 0400
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "openvpn-manager.fullname" . }}-data

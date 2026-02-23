@@ -1,0 +1,6 @@
+apiVersion: v2
+name: openvpn-manager
+description: Web UI for managing OpenVPN clients across multiple EC2 servers
+type: application
+version: 0.2.0
+appVersion: "2.0.0"
