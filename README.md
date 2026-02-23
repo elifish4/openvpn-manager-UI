@@ -2,6 +2,10 @@
 
 A full-stack web application for managing OpenVPN clients across multiple EC2 servers. Automates user creation, revocation, `.ovpn` file downloads, and tunnel mode switching — all from a modern UI with role-based access control.
 
+![alt text](image.png)
+
+![alt text](image-1.png)
+
 ## Features
 
 - **Multi-server management** — manage clients across multiple OpenVPN servers from a single dashboard
