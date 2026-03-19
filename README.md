@@ -39,61 +39,6 @@ A full-stack web application for managing OpenVPN clients across multiple EC2 se
                                          └──────────┘   └──────────┘
 ```
 
-| Layer    | Stack                                    |
-|----------|------------------------------------------|
-| Frontend | React 19, TypeScript, Tailwind CSS, Vite |
-| Backend  | Python 3.13, FastAPI, Paramiko, SQLite, Slack SDK |
-| Auth     | JWT (python-jose), bcrypt (passlib)       |
-| Infra    | Docker, Helm, Kubernetes, Nginx           |
-
-## Project Structure
-
-```
-openvpn_manager/
-├── backend/
-│   ├── app/
-│   │   ├── main.py          # FastAPI routes (VPN + auth + admin)
-│   │   ├── auth.py          # JWT auth, user CRUD, SQLite storage
-│   │   ├── audit.py         # Audit logging + client metadata (SQLite)
-│   │   ├── config.py        # Pydantic settings from env vars
-│   │   ├── slack_notify.py  # Slack DM with .ovpn file delivery
-│   │   └── ssh_manager.py   # SSH automation (create/revoke/tunnel/download)
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── run.py
-│   └── .env.example
-├── frontend/
-│   ├── src/
-│   │   ├── auth.tsx          # Auth context & token management
-│   │   ├── api.ts            # API client with auth headers
-│   │   ├── App.tsx
-│   │   └── components/
-│   │       ├── LoginPage.tsx
-│   │       ├── Dashboard.tsx
-│   │       ├── ServerDetail.tsx
-│   │       ├── ClientTable.tsx
-│   │       ├── CreateClientModal.tsx
-│   │       ├── AdminPanel.tsx
-│   │       ├── AuditLog.tsx
-│   │       └── ...
-│   ├── Dockerfile
-│   └── nginx.conf.template
-├── helm/
-│   └── openvpn-manager/
-│       ├── Chart.yaml
-│       ├── values.yaml
-│       └── templates/
-│           ├── deployment-backend.yaml
-│           ├── deployment-frontend.yaml
-│           ├── service-backend.yaml
-│           ├── service-frontend.yaml
-│           ├── ingress.yaml
-│           ├── configmap.yaml
-│           ├── secret-admin.yaml
-│           ├── secret-ssh-keys.yaml
-│           └── pvc.yaml
-└── docker-compose.yml
-```
 
 ## How It Works
 
@@ -117,36 +62,9 @@ With multiple servers and dozens of users, this becomes tedious and error-prone.
 
 The backend (`ssh_manager.py`) connects to each VPN server over SSH using a private key and automates the interactive script programmatically:
 
-```
-Backend (FastAPI)                          VPN Server (EC2)
-      │                                         │
-      │─── SSH connect (Paramiko + key) ────────▶│
-      │                                         │
-      │─── echo -e "1\n{name}\n1" | sudo       │
-      │    /vpn/setup_open_vpn.sh ──────────────▶│  ← pipe answers to interactive prompts
-      │                                         │
-      │◀── stdout: certificate output ──────────│
-      │                                         │
-      │─── SFTP: download {name}.ovpn ──────────▶│
-      │◀── file bytes ──────────────────────────│
-      │                                         │
-      │─── SSH close ───────────────────────────▶│
-```
-
 **Client creation** pipes all expected answers (menu choice, client name, password option) to the script's stdin in a single `echo -e ... | sudo script` command. This avoids fragile interactive prompt matching and handles the script's variable output reliably.
 
 **Client revocation** uses an interactive shell (`invoke_shell`) because the script dynamically lists existing clients with numbered indices. The backend reads the menu, finds the target client's number, and sends it back — then confirms the revocation.
-
-### Data Sources Read via SSH
-
-| Data | Source on Server | Method |
-|------|-----------------|--------|
-| Client list (active/revoked) | `/etc/openvpn/easy-rsa/pki/index.txt` | Parse PKI index: `V` = valid, `R` = revoked |
-| `.ovpn` file availability | `ls ~/*.ovpn` | Check if config file exists |
-| Tunnel mode (full/split) | `/etc/openvpn/ccd/<client>` | CCD file with `redirect-gateway` = full tunnel; `.orig` suffix = split |
-| Currently connected clients | `/var/log/openvpn/status.log` (or similar) | Parse the `CLIENT LIST` CSV section for common name, IP, connected since |
-| Last seen timestamp | `journalctl -u openvpn*` | Grep for `Peer Connection Initiated` events per client |
-| Server health | `uptime`, `systemctl is-active openvpn*` | Standard system commands |
 
 ### Tunnel Mode Switching
 
@@ -184,83 +102,12 @@ Slack integration is **fire-and-forget**: if the lookup fails (user not in works
 
 **Required Slack bot scopes:** `users:read`, `users:read.email`, `chat:write`, `files:write`, `im:write`
 
-### Audit Log
-
-All significant actions are recorded in an `audit_log` SQLite table with timestamp, username, action type, server, client, and details. Tracked actions include:
-
-- Client creation and revocation
-- `.ovpn` file downloads
-- Tunnel mode changes
-- User logins
-- Admin user management (create/update/delete)
-
-Admins can view the full audit log from a dedicated **System Log** tab in the UI, with filtering by action type, text search, and pagination.
-
-### Authentication & Authorization
-
-The management UI itself is protected by JWT authentication. User accounts are stored in a SQLite database on a Kubernetes PersistentVolume. An initial admin account is seeded from a Kubernetes Secret on startup. Admins can create/revoke VPN clients and manage system users; viewers have read-only access.
-
 ## Getting Started
 
 ### Prerequisites
-
-- Python 3.13+
-- Node.js 20+
 - SSH key access to your OpenVPN EC2 servers
 
-### Local Development
-
-1. **Configure the backend:**
-
-```bash
-cd backend
-cp .env.example .env
-# Edit .env with your VPN server IPs, SSH key paths, and admin credentials
-```
-
-2. **Start the backend:**
-
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python run.py
-```
-
-3. **Start the frontend:**
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-4. Open http://localhost:5173 and log in with the admin credentials from your `.env`.
-
-### Docker Compose
-
-```bash
-docker-compose up --build
-```
-
-Access at http://localhost:3000.
-
 ## Kubernetes Deployment
-
-### Build & Push Images
-
-```bash
-# Backend
-docker buildx build --platform linux/amd64 --push \
-  -t docker.io/kokofish/openvpn-manager-backend:2.0.0 \
-  ./backend
-
-# Frontend
-docker buildx build --platform linux/amd64 --push \
-  -t docker.io/kokofish/openvpn-manager-frontend:2.0.1 \
-  ./frontend
-```
 
 ### Deploy with Helm
 
@@ -288,60 +135,3 @@ helm upgrade --install vpn-manager ./helm/openvpn-manager \
   --set admin.jwtSecret=YOUR_RANDOM_SECRET \
   --set existingSshKeysSecret=vpn-manager-openvpn-manager-ssh-keys
 ```
-
-### Helm Values Reference
-
-| Key | Description | Default |
-|-----|-------------|---------|
-| `backend.image.tag` | Backend image tag | `2.0.0` |
-| `frontend.image.tag` | Frontend image tag | `2.0.1` |
-| `ingress.enabled` | Enable ingress | `true` |
-| `ingress.className` | Ingress class | `internal-nginx` |
-| `ingress.host` | Ingress hostname | `vpn-manager.<YOUR_DOMAIN>>.com` |
-| `admin.username` | Initial admin username | `admin` |
-| `admin.password` | Initial admin password | `changeme` |
-| `admin.jwtSecret` | JWT signing secret | `change-this-to-a-random-string` |
-| `admin.slackBotToken` | Slack bot token for .ovpn DM delivery (empty = disabled) | `""` |
-| `persistence.size` | PVC size for user database | `1Gi` |
-| `persistence.storageClass` | Storage class | `gp2` |
-| `vpnServers.server1.*` | First VPN server config | — |
-| `vpnServers.server2.*` | Second VPN server config | — |
-
-## Security Groups
-
-The OpenVPN EC2 servers need the following inbound rule to allow SSH from the Kubernetes cluster:
-
-| Protocol | Port | Source | Description |
-|----------|------|--------|-------------|
-| TCP | 22 | EKS node subnet CIDR | SSH from VPN Manager backend pods |
-
-## Roles & Permissions
-
-| Action | Admin | Viewer |
-|--------|:-----:|:------:|
-| View servers & clients | Yes | Yes |
-| Download `.ovpn` files | Yes | Yes |
-| Create clients | Yes | No |
-| Revoke clients | Yes | No |
-| Change tunnel mode | Yes | No |
-| Manage users | Yes | No |
-
-## API Endpoints
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `POST` | `/api/auth/login` | — | Login, returns JWT |
-| `GET` | `/api/auth/me` | Any | Current user info |
-| `GET` | `/api/health` | — | Health check |
-| `GET` | `/api/servers` | Any | List VPN servers |
-| `GET` | `/api/servers/:id/status` | Any | Server status & uptime |
-| `GET` | `/api/servers/:id/clients` | Any | List VPN clients |
-| `POST` | `/api/servers/:id/clients` | Admin | Create client |
-| `DELETE` | `/api/servers/:id/clients/:name` | Admin | Revoke client |
-| `PATCH` | `/api/servers/:id/clients/:name/tunnel` | Admin | Change tunnel mode |
-| `GET` | `/api/servers/:id/clients/:name/download` | Any | Download `.ovpn` file |
-| `GET` | `/api/admin/users` | Admin | List manager users |
-| `POST` | `/api/admin/users` | Admin | Create manager user |
-| `PATCH` | `/api/admin/users/:username` | Admin | Update user |
-| `DELETE` | `/api/admin/users/:username` | Admin | Delete user |
-| `GET` | `/api/admin/audit-log` | Admin | View system audit log |
