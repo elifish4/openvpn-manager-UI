@@ -25,10 +25,24 @@ export interface VPNClient {
   connected: boolean;
   connected_since: string | null;
   real_address: string | null;
+  bytes_received: number;
+  bytes_sent: number;
   last_seen: string | null;
   email: string | null;
   first_name: string | null;
   last_name: string | null;
+}
+
+export interface ClientTraffic {
+  client_name: string;
+  bytes_in: number;
+  bytes_out: number;
+}
+
+export interface TrafficResponse {
+  clients: ClientTraffic[];
+  totals: { bytes_in: number; bytes_out: number };
+  days: number;
 }
 
 export interface AppUser {
@@ -87,6 +101,11 @@ export const api = {
       body: JSON.stringify({ first_name: firstName, last_name: lastName, email, use_password: usePassword, password, send_slack: sendSlack }),
     }),
 
+  disconnectClient: (serverId: number, clientName: string) =>
+    request<{ success: boolean; message: string }>(`/servers/${serverId}/clients/${clientName}/disconnect`, {
+      method: 'POST',
+    }),
+
   revokeClient: (serverId: number, clientName: string) =>
     request<{ success: boolean; message: string }>(`/servers/${serverId}/clients/${clientName}`, {
       method: 'DELETE',
@@ -123,6 +142,10 @@ export const api = {
     request<{ message: string }>(`/admin/users/${username}`, {
       method: 'DELETE',
     }),
+
+  // Traffic
+  getTraffic: (serverId: number, days: number = 30) =>
+    request<TrafficResponse>(`/servers/${serverId}/traffic?days=${days}`),
 
   // Admin: Audit Log
   getAuditLog: (limit = 100, offset = 0, action?: string) => {

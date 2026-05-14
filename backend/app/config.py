@@ -12,25 +12,11 @@ class VPNServerConfig(BaseModel):
     script_path: str = "/vpn/setup_open_vpn.sh"
     ovpn_dir: str = "/home/ubuntu"
     env_label: str = "env"
+    menu_add: str = "1"
+    menu_revoke: str = "2"
 
 
 class Settings(BaseSettings):
-    vpn_server_1_name: str = "VPN Server 1"
-    vpn_server_1_host: str = ""
-    vpn_server_1_user: str = "ubuntu"
-    vpn_server_1_key_path: str = ""
-    vpn_server_1_script_path: str = "/vpn/setup_open_vpn.sh"
-    vpn_server_1_ovpn_dir: str = "/home/ubuntu"
-    vpn_server_1_env_label: str = "prod"
-
-    vpn_server_2_name: str = "VPN Server 2"
-    vpn_server_2_host: str = ""
-    vpn_server_2_user: str = "ubuntu"
-    vpn_server_2_key_path: str = ""
-    vpn_server_2_script_path: str = "/vpn/setup_open_vpn.sh"
-    vpn_server_2_ovpn_dir: str = "/home/ubuntu"
-    vpn_server_2_env_label: str = "dev"
-
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
@@ -47,26 +33,23 @@ class Settings(BaseSettings):
 
     def get_servers(self) -> list[VPNServerConfig]:
         servers = []
-        if self.vpn_server_1_host:
+        idx = 1
+        while True:
+            host = os.environ.get(f"VPN_SERVER_{idx}_HOST", "")
+            if not host:
+                break
             servers.append(VPNServerConfig(
-                name=self.vpn_server_1_name,
-                host=self.vpn_server_1_host,
-                user=self.vpn_server_1_user,
-                key_path=self.vpn_server_1_key_path,
-                script_path=self.vpn_server_1_script_path,
-                ovpn_dir=self.vpn_server_1_ovpn_dir,
-                env_label=self.vpn_server_1_env_label,
+                name=os.environ.get(f"VPN_SERVER_{idx}_NAME", f"VPN Server {idx}"),
+                host=host,
+                user=os.environ.get(f"VPN_SERVER_{idx}_USER", "ubuntu"),
+                key_path=os.environ.get(f"VPN_SERVER_{idx}_KEY_PATH", ""),
+                script_path=os.environ.get(f"VPN_SERVER_{idx}_SCRIPT_PATH", "/vpn/setup_open_vpn.sh"),
+                ovpn_dir=os.environ.get(f"VPN_SERVER_{idx}_OVPN_DIR", "/home/ubuntu"),
+                env_label=os.environ.get(f"VPN_SERVER_{idx}_ENV_LABEL", "env"),
+                menu_add=os.environ.get(f"VPN_SERVER_{idx}_MENU_ADD", "1"),
+                menu_revoke=os.environ.get(f"VPN_SERVER_{idx}_MENU_REVOKE", "2"),
             ))
-        if self.vpn_server_2_host:
-            servers.append(VPNServerConfig(
-                name=self.vpn_server_2_name,
-                host=self.vpn_server_2_host,
-                user=self.vpn_server_2_user,
-                key_path=self.vpn_server_2_key_path,
-                script_path=self.vpn_server_2_script_path,
-                ovpn_dir=self.vpn_server_2_ovpn_dir,
-                env_label=self.vpn_server_2_env_label,
-            ))
+            idx += 1
         return servers
 
 

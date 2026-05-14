@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -16,6 +17,7 @@ from .auth import (
 )
 from . import audit
 from . import slack_notify
+from . import traffic
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,9 +44,26 @@ def _server_name(server_id: int) -> str:
     return f"Server {server_id}"
 
 
+TRAFFIC_POLL_INTERVAL = 300  # 5 minutes
+
+
+async def _poll_traffic():
+    """Background task: poll each server's status file and record traffic deltas."""
+    while True:
+        await asyncio.sleep(TRAFFIC_POLL_INTERVAL)
+        for server_id, mgr in ssh_managers.items():
+            try:
+                connected = mgr.get_connected_with_traffic()
+                if connected:
+                    traffic.record_snapshot(server_id, connected)
+            except Exception as e:
+                logger.warning(f"[traffic-poll] server {server_id}: {e}")
+
+
 @app.on_event("startup")
 def startup():
     init_admin_user()
+    asyncio.get_event_loop().create_task(_poll_traffic())
 
 
 @app.get("/api/health")
@@ -129,6 +148,17 @@ def get_audit_log(
     return {"logs": logs, "total": total}
 
 
+# --- Traffic ---
+
+@app.get("/api/servers/{server_id}/traffic")
+def get_traffic(server_id: int, days: int = Query(default=30, ge=1, le=365), user: dict = Depends(get_current_user)):
+    if server_id not in ssh_managers:
+        raise HTTPException(status_code=404, detail="Server not found")
+    per_client = traffic.get_traffic(server_id, days)
+    totals = traffic.get_server_totals(server_id, days)
+    return {"clients": per_client, "totals": totals, "days": days}
+
+
 # --- VPN Servers (protected) ---
 
 @app.get("/api/servers")
@@ -203,6 +233,17 @@ def create_client(server_id: int, req: CreateClientRequest, user: dict = Depends
     result["client_name"] = client_name
     result["slack_sent"] = slack_result.get("sent", False)
     result["slack_error"] = slack_result.get("reason") if not slack_result.get("sent") else None
+    return result
+
+
+@app.post("/api/servers/{server_id}/clients/{client_name}/disconnect")
+def disconnect_client(server_id: int, client_name: str, user: dict = Depends(require_admin)):
+    if server_id not in ssh_managers:
+        raise HTTPException(status_code=404, detail="Server not found")
+    result = ssh_managers[server_id].disconnect_client(client_name)
+    if not result["success"]:
+        raise HTTPException(status_code=400, detail=result.get("error", "Unknown error"))
+    audit.record(user["username"], "disconnect_client", _server_name(server_id), client_name)
     return result
 
 

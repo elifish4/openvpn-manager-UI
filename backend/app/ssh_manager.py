@@ -56,9 +56,10 @@ class SSHManager:
             uptime = stdout.read().decode().strip()
 
             stdin, stdout, stderr = client.exec_command(
-                "systemctl is-active openvpn* 2>/dev/null || echo 'unknown'"
+                "systemctl is-active openvpn-server@server openvpn@server openvpn 2>/dev/null"
             )
-            vpn_status = stdout.read().decode().strip()
+            statuses = stdout.read().decode().strip().split("\n")
+            vpn_status = "active" if "active" in statuses else statuses[0] if statuses else "unknown"
 
             stdin, stdout, stderr = client.exec_command(
                 "hostname -I 2>/dev/null | awk '{print $1}'"
@@ -76,64 +77,36 @@ class SSHManager:
             logger.error(f"Connection check failed for {self.server.host}: {e}")
             return {"online": False, "error": str(e)}
 
-    def _get_tunnel_map(self, client: paramiko.SSHClient) -> dict[str, str]:
-        """Check CCD directory to determine tunnel mode per client.
+    def _parse_connected_clients(self, status_output: str) -> dict[str, dict]:
+        """Parse OpenVPN status output to find currently connected clients.
 
-        CCD files with `redirect-gateway` → full tunnel.
-        Files renamed to .orig → split (disabled override).
-        No CCD file → uses server default (split tunnel).
+        Supports both formats:
+          - Legacy (status-version 1): Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since
+          - Tagged (status-version 3): CLIENT_LIST,CN,Real Addr,VAddr,VAddr6,Bytes Recv,Bytes Sent,Connected Since,...
         """
-        ccd_dirs = [
-            "/etc/openvpn/ccd",
-            "/etc/openvpn/server/ccd",
-        ]
-        tunnel_map: dict[str, str] = {}
-        full_tunnel_ccd: set[str] = set()
-
-        for ccd_dir in ccd_dirs:
-            stdin, stdout, stderr = client.exec_command(f"sudo ls {ccd_dir}/ 2>/dev/null")
-            files_raw = stdout.read().decode().strip()
-            if not files_raw:
-                continue
-
-            for filename in files_raw.split("\n"):
-                filename = filename.strip()
-                if not filename:
-                    continue
-
-                is_disabled = filename.endswith(".orig")
-                base_name = filename[:-5] if is_disabled else filename
-
-                stdin, stdout, stderr = client.exec_command(
-                    f"sudo cat {ccd_dir}/{filename} 2>/dev/null"
-                )
-                content = stdout.read().decode().strip()
-
-                has_redirect = "redirect-gateway" in content
-
-                if has_redirect and not is_disabled:
-                    full_tunnel_ccd.add(base_name)
-                    tunnel_map[base_name] = "full"
-                elif has_redirect and is_disabled:
-                    tunnel_map[base_name] = "split"
-
-        return tunnel_map, full_tunnel_ccd
-
-    def _get_connected_clients(self, client: paramiko.SSHClient) -> dict[str, dict]:
-        """Parse the OpenVPN status file to find currently connected clients."""
-        status_paths = [
-            "/var/log/openvpn/status.log",
-            "/etc/openvpn/server/openvpn-status.log",
-            "/run/openvpn-server/status-server.log",
-        ]
         connected: dict[str, dict] = {}
-        for path in status_paths:
-            stdin, stdout, stderr = client.exec_command(f"sudo cat {path} 2>/dev/null")
-            content = stdout.read().decode().strip()
-            if not content or "CLIENT LIST" not in content:
-                continue
+        if not status_output:
+            return connected
+
+        for line in status_output.split("\n"):
+            if line.startswith("CLIENT_LIST,"):
+                parts = line.split(",")
+                if len(parts) >= 8:
+                    cn = parts[1].strip()
+                    real_addr = parts[2].split(":")[0].strip()
+                    bytes_recv = int(parts[5]) if parts[5].strip().isdigit() else 0
+                    bytes_sent = int(parts[6]) if parts[6].strip().isdigit() else 0
+                    connected_since = parts[7].strip()
+                    connected[cn] = {
+                        "real_address": real_addr,
+                        "bytes_received": bytes_recv,
+                        "bytes_sent": bytes_sent,
+                        "connected_since": connected_since,
+                    }
+
+        if not connected and "Common Name," in status_output:
             in_client_list = False
-            for line in content.split("\n"):
+            for line in status_output.split("\n"):
                 if line.startswith("Common Name,"):
                     in_client_list = True
                     continue
@@ -144,68 +117,128 @@ class SSHManager:
                     if len(parts) >= 4:
                         cn = parts[0].strip()
                         real_addr = parts[1].split(":")[0].strip()
-                        connected_since = parts[3].strip() if len(parts) > 3 else ""
+                        bytes_recv = int(parts[2]) if parts[2].strip().isdigit() else 0
+                        bytes_sent = int(parts[3]) if parts[3].strip().isdigit() else 0
+                        connected_since = parts[4].strip() if len(parts) > 4 else ""
                         connected[cn] = {
                             "real_address": real_addr,
+                            "bytes_received": bytes_recv,
+                            "bytes_sent": bytes_sent,
                             "connected_since": connected_since,
                         }
-            break
+
         return connected
 
-    def _get_last_seen(self, client: paramiko.SSHClient) -> dict[str, str]:
-        """Parse journalctl for the most recent connection event per client."""
-        last_seen: dict[str, str] = {}
-        stdin, stdout, stderr = client.exec_command(
-            'sudo journalctl -u "openvpn*" -u "ovpn-*" --no-pager --since "30 days ago" 2>/dev/null '
-            '| grep -E "Peer Connection Initiated|peer info|Data Channel" '
-            '| tail -200'
-        )
-        log_output = stdout.read().decode().strip()
-        if not log_output:
-            return last_seen
+    def _parse_tunnel_map(self, ccd_output: str) -> tuple[dict[str, str], bool]:
+        """Parse CCD listing output to determine tunnel mode per client.
 
-        for line in log_output.split("\n"):
-            # Format: "Feb 22 18:46:22 hostname ovpn-server[pid]: username/ip:port ..."
+        Returns (tunnel_map, global_redirect).
+        """
+        tunnel_map: dict[str, str] = {}
+        global_redirect = False
+
+        for line in ccd_output.split("\n"):
+            line = line.strip()
+            if line.startswith("GLOBAL_REDIRECT:"):
+                global_redirect = "yes" in line.lower()
+            elif line.startswith("CCD:"):
+                # Format: CCD:<filename>:<content>
+                rest = line[4:]
+                sep_idx = rest.find(":")
+                if sep_idx > 0:
+                    filename = rest[:sep_idx]
+                    content = rest[sep_idx + 1:]
+                    if "push-remove redirect-gateway" in content:
+                        tunnel_map[filename] = "split"
+                    elif "redirect-gateway" in content:
+                        tunnel_map[filename] = "full"
+
+        return tunnel_map, global_redirect
+
+    def _parse_last_seen(self, journal_output: str) -> dict[str, str]:
+        """Parse journalctl output for the most recent connection event per client."""
+        last_seen: dict[str, str] = {}
+        for line in journal_output.split("\n"):
             match = re.match(r'^(\w+ \d+ [\d:]+) \S+ \S+\[\d+\]: ([^/]+)/', line)
             if match:
-                timestamp_str = match.group(1)
-                cn = match.group(2).strip()
-                last_seen[cn] = timestamp_str
+                last_seen[match.group(2).strip()] = match.group(1)
         return last_seen
 
-    def list_clients(self) -> list[dict]:
-        """List all VPN clients with certs, tunnel config, connection status, and last seen."""
+    def get_connected_with_traffic(self) -> dict[str, dict]:
+        """Public wrapper for background traffic polling."""
         try:
             client = self._get_client()
-
             stdin, stdout, stderr = client.exec_command(
-                "sudo cat /etc/openvpn/easy-rsa/pki/index.txt 2>/dev/null"
+                "sudo cat /run/openvpn-server/status-server.log "
+                "/var/log/openvpn/status.log "
+                "/etc/openvpn/server/openvpn-status.log 2>/dev/null",
+                timeout=10,
             )
-            index_raw = stdout.read().decode().strip()
+            result = self._parse_connected_clients(stdout.read().decode())
+            client.close()
+            return result
+        except Exception as e:
+            logger.warning(f"[traffic] Failed to poll {self.server.host}: {e}")
+            return {}
 
-            stdin, stdout, stderr = client.exec_command(
-                f"ls {self.server.ovpn_dir}/*.ovpn 2>/dev/null"
-            )
-            ovpn_files_raw = stdout.read().decode().strip()
+    _BATCH_SCRIPT = r"""
+echo '===INDEX==='
+sudo cat /etc/openvpn/server/easy-rsa/pki/index.txt /etc/openvpn/easy-rsa/pki/index.txt 2>/dev/null | head -200 || true
+echo '===STATUS==='
+sudo cat /run/openvpn-server/status-server.log /var/log/openvpn/status.log /etc/openvpn/server/openvpn-status.log 2>/dev/null || true
+echo '===CCD==='
+sudo grep -q 'redirect-gateway' /etc/openvpn/server/server.conf /etc/openvpn/server.conf 2>/dev/null && echo 'GLOBAL_REDIRECT:YES' || echo 'GLOBAL_REDIRECT:NO'
+for d in /etc/openvpn/server/ccd /etc/openvpn/ccd; do
+  if [ -d "$d" ]; then
+    for f in "$d"/*; do
+      if [ -f "$f" ]; then echo "CCD:$(basename "$f"):$(sudo cat "$f" 2>/dev/null)"; fi
+    done
+  fi
+done
+echo '===JOURNAL==='
+timeout 8 sudo journalctl -u 'openvpn-server@server' -u 'openvpn@server' --no-pager -n 2000 2>/dev/null | grep -E 'Peer Connection Initiated|peer info|Data Channel' | tail -100 || true
+echo '===YEAR==='
+date +%Y
+echo '===END==='
+"""
 
-            tunnel_map, full_tunnel_ccd = self._get_tunnel_map(client)
-            connected = self._get_connected_clients(client)
-            last_seen = self._get_last_seen(client)
-
-            # Get server year for timestamp parsing
-            stdin, stdout, stderr = client.exec_command("date +%Y")
-            server_year = stdout.read().decode().strip()
-
+    def list_clients(self) -> list[dict]:
+        """List all VPN clients in a single SSH call for performance."""
+        try:
+            client = self._get_client()
+            cmd = self._BATCH_SCRIPT
+            stdin, stdout, stderr = client.exec_command(cmd, timeout=20)
+            raw = stdout.read().decode("utf-8", errors="replace")
             client.close()
 
-            ovpn_files = set()
-            if ovpn_files_raw:
-                for f in ovpn_files_raw.split("\n"):
-                    name = f.split("/")[-1].replace(".ovpn", "")
-                    ovpn_files.add(name)
+            sections: dict[str, str] = {}
+            current_key = None
+            current_lines: list[str] = []
+            for line in raw.split("\n"):
+                if line.startswith("===") and line.endswith("==="):
+                    if current_key:
+                        sections[current_key] = "\n".join(current_lines)
+                    current_key = line.strip("=")
+                    current_lines = []
+                else:
+                    current_lines.append(line)
+            if current_key:
+                sections[current_key] = "\n".join(current_lines)
 
-            valid_certs = set()
-            revoked_certs = set()
+            index_raw = sections.get("INDEX", "").strip()
+            status_raw = sections.get("STATUS", "").strip()
+            ccd_raw = sections.get("CCD", "").strip()
+            journal_raw = sections.get("JOURNAL", "").strip()
+            server_year = sections.get("YEAR", "").strip() or "2026"
+
+            connected = self._parse_connected_clients(status_raw)
+            tunnel_map, global_redirect = self._parse_tunnel_map(ccd_raw)
+            self._global_redirect = global_redirect
+            default_tunnel = "full" if global_redirect else "split"
+            last_seen = self._parse_last_seen(journal_raw)
+
+            valid_certs: set[str] = set()
+            revoked_certs: set[str] = set()
             if index_raw:
                 for line in index_raw.split("\n"):
                     parts = line.split("\t")
@@ -223,33 +256,36 @@ class SSHManager:
             clients = []
             for name in sorted(valid_certs):
                 conn_info = connected.get(name)
-                entry = {
+                clients.append({
                     "name": name,
                     "status": "active",
-                    "has_ovpn": name in ovpn_files,
-                    "tunnel_mode": tunnel_map.get(name, "split"),
+                    "has_ovpn": True,
+                    "tunnel_mode": tunnel_map.get(name, default_tunnel),
                     "connected": conn_info is not None,
                     "connected_since": conn_info["connected_since"] if conn_info else None,
                     "real_address": conn_info["real_address"] if conn_info else None,
+                    "bytes_received": conn_info["bytes_received"] if conn_info else 0,
+                    "bytes_sent": conn_info["bytes_sent"] if conn_info else 0,
                     "last_seen": f"{last_seen[name]} {server_year}" if name in last_seen else None,
-                }
-                clients.append(entry)
+                })
 
             for name in sorted(revoked_certs):
                 clients.append({
                     "name": name,
                     "status": "revoked",
-                    "has_ovpn": name in ovpn_files,
-                    "tunnel_mode": tunnel_map.get(name, "split"),
+                    "has_ovpn": False,
+                    "tunnel_mode": tunnel_map.get(name, default_tunnel),
                     "connected": False,
                     "connected_since": None,
                     "real_address": None,
+                    "bytes_received": 0,
+                    "bytes_sent": 0,
                     "last_seen": None,
                 })
 
             return clients
         except Exception as e:
-            logger.error(f"Failed to list clients on {self.server.host}: {e}")
+            logger.error(f"Failed to list clients on {self.server.host}: {type(e).__name__}: {e}", exc_info=True)
             raise
 
     def _drain_channel(self, channel, seconds: float = 3) -> str:
@@ -266,13 +302,12 @@ class SSHManager:
         """Create a new VPN client by piping answers to the interactive script."""
         try:
             client = self._get_client()
+            add_opt = self.server.menu_add
             password_choice = "2" if use_password else "1"
             if use_password and password:
-                # Pipe: 1 = add user, client_name, 2 = with password, password, password (confirm)
-                cmd = f'echo -e "1\\n{client_name}\\n{password_choice}\\n{password}\\n{password}" | sudo {self.server.script_path}'
+                cmd = f'echo -e "{add_opt}\\n{client_name}\\n{password_choice}\\n{password}\\n{password}" | {self.server.script_path}'
             else:
-                # Pipe: 1 = add user, client_name, 1 = passwordless
-                cmd = f'echo -e "1\\n{client_name}\\n{password_choice}" | sudo {self.server.script_path}'
+                cmd = f'echo -e "{add_opt}\\n{client_name}\\n{password_choice}" | {self.server.script_path}'
             logger.info(f"[create] running on {self.server.host}: {cmd}")
 
             stdin, stdout, stderr = client.exec_command(cmd, timeout=180)
@@ -308,11 +343,14 @@ class SSHManager:
             time.sleep(1)
             self._read_until(channel, ["$", "#"])
 
-            channel.send(f"sudo {self.server.script_path}\n")
+            channel.send(f"{self.server.script_path}\n")
             output = self._read_until(channel, ["Select an option"])
 
-            channel.send("2\n")
-            output = self._read_until(channel, ["number of the existing client", "Select one"])
+            revoke_opt = self.server.menu_revoke
+            logger.info(f"[revoke] using menu option {revoke_opt} for revoke")
+
+            channel.send(f"{revoke_opt}\n")
+            output = self._read_until(channel, ["number of the existing client", "Select one", "client to revoke"])
 
             lines = output.split("\n")
             client_number = None
@@ -355,56 +393,83 @@ class SSHManager:
     def set_tunnel_mode(self, client_name: str, mode: str) -> dict:
         """Switch a client between full and split tunnel by managing their CCD file.
 
-        Full tunnel: CCD file named <client> with `push "redirect-gateway def1"`
-        Split tunnel: CCD file renamed to <client>.orig (or removed if no file existed)
+        Split tunnel is the server default (VPC routes pushed in server.conf).
+        Full tunnel = CCD file with push redirect-gateway; split = remove CCD.
         """
         try:
             client = self._get_client()
             ccd_dir = self._find_ccd_dir(client)
-            active_path = f"{ccd_dir}/{client_name}"
-            disabled_path = f"{ccd_dir}/{client_name}.orig"
+            ccd_path = f"{ccd_dir}/{client_name}"
 
-            if mode == "full":
-                stdin, stdout, stderr = client.exec_command(
-                    f"sudo test -f {disabled_path} && echo exists"
-                )
-                if "exists" in stdout.read().decode():
-                    stdin, stdout, stderr = client.exec_command(
-                        f"sudo mv {disabled_path} {active_path}"
-                    )
-                    stderr_out = stderr.read().decode().strip()
-                    if stderr_out:
-                        client.close()
-                        return {"success": False, "error": stderr_out}
-                else:
-                    cmd = f'echo \'push "redirect-gateway def1"\' | sudo tee {active_path} > /dev/null'
-                    stdin, stdout, stderr = client.exec_command(cmd)
-                    stderr_out = stderr.read().decode().strip()
-                    if stderr_out:
-                        client.close()
-                        return {"success": False, "error": stderr_out}
-
-            elif mode == "split":
-                stdin, stdout, stderr = client.exec_command(
-                    f"sudo test -f {active_path} && echo exists"
-                )
-                if "exists" in stdout.read().decode():
-                    stdin, stdout, stderr = client.exec_command(
-                        f"sudo mv {active_path} {disabled_path}"
-                    )
-                    stderr_out = stderr.read().decode().strip()
-                    if stderr_out:
-                        client.close()
-                        return {"success": False, "error": stderr_out}
-            else:
+            if mode not in ("full", "split"):
                 client.close()
                 return {"success": False, "error": f"Invalid mode: {mode}"}
+
+            if mode == "full":
+                cmd = f'echo \'push "redirect-gateway def1"\' | sudo tee {ccd_path} > /dev/null'
+                stdin, stdout, stderr = client.exec_command(cmd)
+                stderr_out = stderr.read().decode().strip()
+                if stderr_out:
+                    client.close()
+                    return {"success": False, "error": stderr_out}
+            else:
+                stdin, stdout, stderr = client.exec_command(f"sudo rm -f {ccd_path}")
 
             client.close()
             return {"success": True, "message": f"Client '{client_name}' set to {mode} tunnel"}
 
         except Exception as e:
             logger.error(f"Failed to set tunnel mode for {client_name}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def disconnect_client(self, client_name: str) -> dict:
+        """Disconnect a currently connected client via the OpenVPN management interface."""
+        try:
+            client = self._get_client()
+
+            # Find the management directive from OpenVPN config
+            find_cmd = (
+                "sudo grep -h '^management' "
+                "/etc/openvpn/server.conf "
+                "/etc/openvpn/server/server.conf "
+                "/etc/openvpn/*.conf "
+                "2>/dev/null | head -1"
+            )
+            stdin, stdout, stderr = client.exec_command(find_cmd)
+            mgmt_line = stdout.read().decode().strip()
+
+            if not mgmt_line:
+                client.close()
+                return {"success": False, "error": "OpenVPN management interface not configured on this server"}
+
+            parts = mgmt_line.split()
+            if len(parts) >= 3:
+                mgmt_host = parts[1]
+                mgmt_port = parts[2]
+            else:
+                client.close()
+                return {"success": False, "error": f"Could not parse management directive: {mgmt_line}"}
+
+            kill_cmd = (
+                f'echo "kill {client_name}" | sudo nc -w 2 {mgmt_host} {mgmt_port} 2>&1'
+            )
+            logger.info(f"[disconnect] running on {self.server.host}: {kill_cmd}")
+            stdin, stdout, stderr = client.exec_command(kill_cmd)
+            output = stdout.read().decode().strip()
+            err = stderr.read().decode().strip()
+            client.close()
+
+            logger.info(f"[disconnect] output: {output} | err: {err}")
+
+            if "SUCCESS" in output:
+                return {"success": True, "message": f"Client '{client_name}' disconnected"}
+            elif "ERROR" in output and "not found" in output.lower():
+                return {"success": False, "error": f"Client '{client_name}' is not currently connected"}
+            else:
+                return {"success": True, "message": f"Disconnect command sent for '{client_name}'"}
+
+        except Exception as e:
+            logger.error(f"Failed to disconnect {client_name}: {e}")
             return {"success": False, "error": str(e)}
 
     def download_ovpn(self, client_name: str) -> Optional[bytes]:

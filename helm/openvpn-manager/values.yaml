@@ -31,12 +31,12 @@ frontend:
 ingress:
   enabled: true
   className: internal-nginx
-  host: vpn-manager.<YOUR_DOMAIN>.com
+  host: vpn-manager.<your_domain>.com
   annotations: {}
   tls: []
   #  - secretName: vpn-manager-tls
   #    hosts:
-  #      - vpn-manager.<YOUR_DOMAIN>.com
+  #      - vpn-manager.<your_domain>.com
 
 # SSH private keys for connecting to VPN servers.
 # Each key here becomes a file in /app/keys/<name>.pem mounted into the backend pod.
@@ -52,26 +52,40 @@ sshKeys: {}
 
 # Alternatively, reference an existing secret that already contains the SSH keys.
 # The secret should have data keys like "devops-open-vpn-prod.pem", "devops-open-vpn-stage.pem"
-existingSshKeysSecret: ""
+existingSshKeysSecret: "vpn-manager-openvpn-manager-ssh-keys"
 
 # VPN server configuration — passed as env vars to the backend.
 vpnServers:
   server1:
     name: "Production VPN"
-    host: "1.2.3.4"
+    host: "18.184.120.11"
     user: "ubuntu"
     keyPath: "/app/keys/devops-open-vpn-prod.pem"
-    scriptPath: "/vpn/setup_open_vpn.sh"
+    scriptPath: "sudo bash openvpn.sh"
     ovpnDir: "/home/ubuntu"
     envLabel: "prod"
+    menuAdd: "1"
+    menuRevoke: "4"
   server2:
     name: "Dev VPN"
-    host: "1.2.3.4"
+    host: "3.71.40.204"
     user: "ubuntu"
-    keyPath: "/app/keys/devops-open-vpn-stage.pem"
-    scriptPath: "/vpn/setup_open_vpn.sh"
+    keyPath: "/app/keys/devops-open-vpn-dev.pem"
+    scriptPath: "sudo bash openvpn.sh"
     ovpnDir: "/home/ubuntu"
     envLabel: "dev"
+    menuAdd: "1"
+    menuRevoke: "4"
+  server3:
+    name: "Stage VPN"
+    host: "3.64.251.242"
+    user: "ubuntu"
+    keyPath: "/app/keys/devops-open-vpn-stage.pem"
+    scriptPath: "sudo bash openvpn.sh"
+    ovpnDir: "/home/ubuntu"
+    envLabel: "stage"
+    menuAdd: "1"
+    menuRevoke: "4"
 
 corsOrigins: "*"
 

@@ -1,6 +1,6 @@
-import { Download, Trash2, UserCheck, UserX, AlertTriangle, Globe, Split, ArrowRightLeft, Wifi, WifiOff, Clock, ChevronUp, ChevronDown, ChevronsUpDown, Search, X } from 'lucide-react';
+import { Download, Trash2, UserCheck, UserX, AlertTriangle, Globe, Split, ArrowRightLeft, Wifi, WifiOff, Clock, ChevronUp, ChevronDown, ChevronsUpDown, Search, X, Unplug } from 'lucide-react';
 import { useState, useMemo, useRef } from 'react';
-import type { VPNClient } from '../api';
+import type { VPNClient, ClientTraffic } from '../api';
 import { api } from '../api';
 import { Spinner } from './Spinner';
 import { Modal } from './Modal';
@@ -12,6 +12,15 @@ interface ClientTableProps {
   onRevoked: () => void;
   onTunnelChanged: () => void;
   isAdmin?: boolean;
+  trafficMap?: Record<string, ClientTraffic>;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  const val = bytes / Math.pow(1024, i);
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
 function formatLastSeen(lastSeen: string | null): string {
@@ -60,7 +69,7 @@ function Tooltip({ children, text }: { children: React.ReactNode; text: string }
   );
 }
 
-type SortKey = 'client' | 'connection' | 'lastSeen' | 'tunnel';
+type SortKey = 'client' | 'connection' | 'lastSeen' | 'tunnel' | 'traffic';
 type SortDir = 'asc' | 'desc';
 
 function parseDate(raw: string | null): number {
@@ -86,6 +95,9 @@ function compareClients(a: VPNClient, b: VPNClient, key: SortKey, dir: SortDir):
     }
     case 'tunnel':
       cmp = a.tunnel_mode.localeCompare(b.tunnel_mode);
+      break;
+    case 'traffic':
+      cmp = (a.bytes_received + a.bytes_sent) - (b.bytes_received + b.bytes_sent);
       break;
   }
   return dir === 'desc' ? -cmp : cmp;
@@ -113,9 +125,10 @@ function SortHeader({ label, sortKey, activeKey, dir, onSort }: {
   );
 }
 
-export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelChanged, isAdmin = false }: ClientTableProps) {
+export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelChanged, isAdmin = false, trafficMap = {} }: ClientTableProps) {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [tunnelToggle, setTunnelToggle] = useState<{ name: string; current: 'full' | 'split' } | null>(null);
   const [togglingTunnel, setTogglingTunnel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -167,6 +180,19 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
       setError(e.message);
     } finally {
       setRevoking(null);
+    }
+  };
+
+  const handleDisconnect = async (name: string) => {
+    try {
+      setDisconnecting(name);
+      setError(null);
+      await api.disconnectClient(serverId, name);
+      onRevoked(); // triggers a refresh
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setDisconnecting(null);
     }
   };
 
@@ -238,6 +264,7 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
               <SortHeader label="Connection" sortKey="connection" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortHeader label="Last Seen" sortKey="lastSeen" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <SortHeader label="Tunnel" sortKey="tunnel" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortHeader label="Traffic" sortKey="traffic" activeKey={sortKey} dir={sortDir} onSort={handleSort} />
               <th className="text-right px-5 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
             </tr>
           </thead>
@@ -269,10 +296,32 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
                 <td className="px-5 py-4">
                   {client.connected ? (
                     <div>
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25">
-                        <Wifi size={11} />
-                        Connected
-                      </span>
+                      {isAdmin ? (
+                        <button
+                          onClick={() => handleDisconnect(client.name)}
+                          disabled={disconnecting === client.name}
+                          className="group/conn inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25 hover:bg-red-500/15 hover:text-red-400 hover:ring-red-500/25 transition-all cursor-pointer disabled:opacity-50"
+                        >
+                          {disconnecting === client.name ? (
+                            <>
+                              <Spinner className="!w-3 !h-3" />
+                              Disconnecting…
+                            </>
+                          ) : (
+                            <>
+                              <Wifi size={11} className="group-hover/conn:hidden" />
+                              <Unplug size={11} className="hidden group-hover/conn:block" />
+                              <span className="group-hover/conn:hidden">Connected</span>
+                              <span className="hidden group-hover/conn:inline">Disconnect</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/25">
+                          <Wifi size={11} />
+                          Connected
+                        </span>
+                      )}
                       {client.real_address && (
                         <p className="text-[11px] text-gray-500 mt-1 font-mono">{client.real_address}</p>
                       )}
@@ -341,6 +390,35 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
                     </span>
                   )}
                 </td>
+                <td className="px-5 py-4">
+                  {(() => {
+                    const hist = trafficMap[client.name];
+                    const liveIn = client.connected ? client.bytes_received : 0;
+                    const liveOut = client.connected ? client.bytes_sent : 0;
+                    const histIn = hist?.bytes_in || 0;
+                    const histOut = hist?.bytes_out || 0;
+                    const totalIn = histIn + liveIn;
+                    const totalOut = histOut + liveOut;
+                    if (totalIn === 0 && totalOut === 0) {
+                      return <span className="text-xs text-gray-600">—</span>;
+                    }
+                    return (
+                      <div className="text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-emerald-400">↓</span>
+                          <span className="text-gray-300">{formatBytes(totalIn)}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-blue-400">↑</span>
+                          <span className="text-gray-300">{formatBytes(totalOut)}</span>
+                        </div>
+                        {client.connected && liveIn > 0 && (
+                          <p className="text-[10px] text-gray-600 mt-0.5">session: {formatBytes(liveIn)} / {formatBytes(liveOut)}</p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </td>
                 <td className="px-5 py-4 text-right">
                   <div className="flex items-center gap-2 justify-end opacity-60 group-hover:opacity-100 transition-opacity">
                     {client.has_ovpn && (
@@ -386,12 +464,15 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
                 <td className="px-5 py-4">
                   <span className="text-xs text-gray-600">—</span>
                 </td>
+                <td className="px-5 py-4">
+                  <span className="text-xs text-gray-600">—</span>
+                </td>
                 <td className="px-5 py-4" />
               </tr>
             ))}
             {needle && activeClients.length === 0 && revokedClients.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-5 py-10 text-center">
+                <td colSpan={6} className="px-5 py-10 text-center">
                   <Search size={24} className="mx-auto mb-2 text-gray-600" />
                   <p className="text-sm text-gray-500">No clients matching "<span className="text-gray-300">{search}</span>"</p>
                 </td>
