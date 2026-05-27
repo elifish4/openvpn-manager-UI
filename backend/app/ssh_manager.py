@@ -19,8 +19,17 @@ def _strip_ansi(text: str) -> str:
 
 
 class SSHManager:
+    # last_seen is derived from a 30-day journal scan that can take 10-30s on a busy
+    # server. Refreshing it every poll would blow paramiko's channel timeout and slow
+    # the UI. We cache it per-instance and only re-scan when older than this TTL.
+    _LAST_SEEN_TTL_SECONDS = 60
+
     def __init__(self, server: VPNServerConfig):
         self.server = server
+        # client_name -> {"ts": "May 27 21:52:07", "ip": "1.2.3.4"}; "ip" may be absent
+        self._last_seen_cache: dict[str, dict[str, str]] = {}
+        self._last_seen_year: str = ""
+        self._last_seen_refreshed_at: float = 0.0
 
     def _get_client(self) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
@@ -155,13 +164,30 @@ class SSHManager:
 
         return tunnel_map, global_redirect
 
-    def _parse_last_seen(self, journal_output: str) -> dict[str, str]:
-        """Parse journalctl output for the most recent connection event per client."""
-        last_seen: dict[str, str] = {}
+    def _parse_last_seen(self, journal_output: str) -> dict[str, dict[str, str]]:
+        """Parse journalctl output for the most recent connection event per client.
+
+        Returns a mapping of client_name -> {"ts": "May 27 21:52:07", "ip": "1.2.3.4"}.
+        The IP comes from the "name/ip:port" token in each event line. If only the name
+        is present (older or unusual log formats), the IP is omitted from the dict.
+        """
+        last_seen: dict[str, dict[str, str]] = {}
         for line in journal_output.split("\n"):
-            match = re.match(r'^(\w+ \d+ [\d:]+) \S+ \S+\[\d+\]: ([^/]+)/', line)
+            match = re.match(
+                r'^(\w+ \d+ [\d:]+) \S+ \S+\[\d+\]: ([^/\s]+)/(\S+)',
+                line,
+            )
             if match:
-                last_seen[match.group(2).strip()] = match.group(1)
+                client_name = match.group(2).strip()
+                ts = match.group(1)
+                ip_field = match.group(3).strip()
+                # The trailing token may be "ip:port", "ip", or our synthesized "ip"
+                # with no port. Strip any port suffix and ignore obviously invalid IPs.
+                ip = ip_field.split(":", 1)[0]
+                entry: dict[str, str] = {"ts": ts}
+                if ip and ip != "0.0.0.0":
+                    entry["ip"] = ip
+                last_seen[client_name] = entry
         return last_seen
 
     def get_connected_with_traffic(self) -> dict[str, dict]:
@@ -195,19 +221,72 @@ for d in /etc/openvpn/server/ccd /etc/openvpn/ccd; do
     done
   fi
 done
-echo '===JOURNAL==='
-timeout 8 sudo journalctl -u 'openvpn-server@server' -u 'openvpn@server' --no-pager -n 2000 2>/dev/null | grep -E 'Peer Connection Initiated|peer info|Data Channel' | tail -100 || true
 echo '===YEAR==='
 date +%Y
 echo '===END==='
 """
 
+    # last_seen is sourced from a 30-day journal scan that can take 10-30s on a busy
+    # server. We run it in a SEPARATE SSH call gated by _LAST_SEEN_TTL_SECONDS, wrapped
+    # in try/except so a slow/failed scan never breaks the main list_clients response.
+    _LAST_SEEN_SCRIPT = r"""
+echo '===JOURNAL==='
+timeout 50 sudo journalctl -u 'openvpn-server@server' -u 'openvpn@server' \
+  --since='30 days ago' --no-pager -o short \
+  --grep='Data Channel:|MULTI_sva' 2>/dev/null \
+| awk '{
+    # Each matching journal line contains a "name/ip:port" token; capture the most
+    # recent timestamp and external IP per client so we can show "last seen from <ip>".
+    for (i = 6; i <= NF; i++) {
+      if ($i ~ /\//) {
+        split($i, p, "/")
+        split(p[2], ipp, ":")
+        lastts[p[1]] = $1 " " $2 " " $3
+        lastip[p[1]] = ipp[1]
+        break
+      }
+    }
+  }
+  END {
+    for (c in lastts) printf "%s host openvpn[0]: %s/%s LAST_SEEN\n", lastts[c], c, lastip[c]
+  }' || true
+echo '===END==='
+"""
+
+    def _refresh_last_seen_cache(self, server_year: str) -> None:
+        """Run the slow journal scan in its own SSH call and update the cache.
+
+        Wrapped by callers in try/except — failure here must not break list_clients.
+        """
+        client = None
+        try:
+            client = self._get_client()
+            stdin, stdout, stderr = client.exec_command(
+                self._LAST_SEEN_SCRIPT, timeout=60
+            )
+            raw = stdout.read().decode("utf-8", errors="replace")
+        finally:
+            if client is not None:
+                client.close()
+
+        journal_raw = ""
+        for line in raw.split("\n"):
+            if line.startswith("===JOURNAL==="):
+                journal_raw = ""
+                continue
+            if line.startswith("===END==="):
+                break
+            journal_raw += line + "\n"
+
+        self._last_seen_cache = self._parse_last_seen(journal_raw)
+        self._last_seen_year = server_year
+        self._last_seen_refreshed_at = time.time()
+
     def list_clients(self) -> list[dict]:
         """List all VPN clients in a single SSH call for performance."""
         try:
             client = self._get_client()
-            cmd = self._BATCH_SCRIPT
-            stdin, stdout, stderr = client.exec_command(cmd, timeout=20)
+            stdin, stdout, stderr = client.exec_command(self._BATCH_SCRIPT, timeout=20)
             raw = stdout.read().decode("utf-8", errors="replace")
             client.close()
 
@@ -228,14 +307,26 @@ echo '===END==='
             index_raw = sections.get("INDEX", "").strip()
             status_raw = sections.get("STATUS", "").strip()
             ccd_raw = sections.get("CCD", "").strip()
-            journal_raw = sections.get("JOURNAL", "").strip()
             server_year = sections.get("YEAR", "").strip() or "2026"
 
             connected = self._parse_connected_clients(status_raw)
             tunnel_map, global_redirect = self._parse_tunnel_map(ccd_raw)
             self._global_redirect = global_redirect
             default_tunnel = "full" if global_redirect else "split"
-            last_seen = self._parse_last_seen(journal_raw)
+
+            # Lazy-refresh last_seen via a separate SSH call. If the journal scan times
+            # out or errors, we keep the previous cache (or an empty dict on first run)
+            # so the main response is never broken by it.
+            if (time.time() - self._last_seen_refreshed_at) > self._LAST_SEEN_TTL_SECONDS:
+                try:
+                    self._refresh_last_seen_cache(server_year)
+                except Exception as e:
+                    logger.warning(
+                        f"last_seen refresh failed for {self.server.host}: "
+                        f"{type(e).__name__}: {e}"
+                    )
+            last_seen = self._last_seen_cache
+            last_seen_year = self._last_seen_year or server_year
 
             valid_certs: set[str] = set()
             revoked_certs: set[str] = set()
@@ -256,6 +347,7 @@ echo '===END==='
             clients = []
             for name in sorted(valid_certs):
                 conn_info = connected.get(name)
+                ls_entry = last_seen.get(name)
                 clients.append({
                     "name": name,
                     "status": "active",
@@ -266,7 +358,8 @@ echo '===END==='
                     "real_address": conn_info["real_address"] if conn_info else None,
                     "bytes_received": conn_info["bytes_received"] if conn_info else 0,
                     "bytes_sent": conn_info["bytes_sent"] if conn_info else 0,
-                    "last_seen": f"{last_seen[name]} {server_year}" if name in last_seen else None,
+                    "last_seen": f"{ls_entry['ts']} {last_seen_year}" if ls_entry else None,
+                    "last_seen_ip": ls_entry.get("ip") if ls_entry else None,
                 })
 
             for name in sorted(revoked_certs):
@@ -281,6 +374,7 @@ echo '===END==='
                     "bytes_received": 0,
                     "bytes_sent": 0,
                     "last_seen": None,
+                    "last_seen_ip": None,
                 })
 
             return clients

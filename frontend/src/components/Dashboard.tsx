@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Shield, AlertCircle, Users, LogOut, ScrollText } from 'lucide-react';
+import { Shield, AlertCircle, Users, LogOut, ScrollText, UserPlus } from 'lucide-react';
 import type { Server as ServerType } from '../api';
 import { useServers, useServerStatus, useClients } from '../hooks/useServers';
 import { useAuth } from '../auth';
@@ -7,6 +7,7 @@ import { ServerCard } from './ServerCard';
 import { ServerDetail } from './ServerDetail';
 import { AdminPanel } from './AdminPanel';
 import { AuditLog } from './AuditLog';
+import { BulkCreateClientModal } from './BulkCreateClientModal';
 import { Spinner } from './Spinner';
 
 function ServerCardWithData({ server, onClick }: { server: ServerType; onClick: () => void }) {
@@ -31,6 +32,7 @@ export function Dashboard() {
   const [selectedServer, setSelectedServer] = useState<ServerType | null>(null);
   const [showAdmin, setShowAdmin] = useState(false);
   const [showAuditLog, setShowAuditLog] = useState(false);
+  const [showBulkCreate, setShowBulkCreate] = useState(false);
 
   if (showAuditLog && isAdmin) {
     return <AuditLog onBack={() => setShowAuditLog(false)} />;
@@ -61,6 +63,14 @@ export function Dashboard() {
             {isAdmin && (
               <>
                 <button
+                  onClick={() => setShowBulkCreate(true)}
+                  disabled={loading || servers.length === 0}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50 disabled:hover:bg-indigo-600"
+                >
+                  <UserPlus size={16} />
+                  Add Client
+                </button>
+                <button
                   onClick={() => setShowAuditLog(true)}
                   className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-300 bg-gray-800/50 rounded-xl border border-gray-700 hover:border-gray-600 hover:text-white transition-all"
                 >
@@ -72,12 +82,22 @@ export function Dashboard() {
                   className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-gray-300 bg-gray-800/50 rounded-xl border border-gray-700 hover:border-gray-600 hover:text-white transition-all"
                 >
                   <Users size={16} />
-                  Admin
+                  Users management
                 </button>
               </>
             )}
             <div className="flex items-center gap-2 px-3 py-2 bg-gray-800/30 rounded-xl border border-gray-800">
-              <span className="text-sm text-gray-400">{user?.username}</span>
+              {user?.picture && (
+                <img
+                  src={user.picture}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="w-6 h-6 rounded-full"
+                />
+              )}
+              <span className="text-sm text-gray-400" title={user?.email}>
+                {user?.name || user?.email}
+              </span>
               <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
                 user?.role === 'admin'
                   ? 'text-amber-400 bg-amber-500/15'
@@ -136,6 +156,12 @@ export function Dashboard() {
           ))}
         </div>
       )}
+
+      <BulkCreateClientModal
+        open={showBulkCreate}
+        onClose={() => setShowBulkCreate(false)}
+        servers={servers}
+      />
     </div>
   );
 }

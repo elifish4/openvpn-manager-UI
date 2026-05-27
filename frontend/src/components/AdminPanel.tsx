@@ -1,7 +1,7 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect } from 'react';
 import {
-  Users, UserPlus, Trash2, KeyRound, ShieldCheck, Eye,
-  AlertTriangle, ArrowLeft, RefreshCw, Pencil,
+  Users, Trash2, ShieldCheck, Eye,
+  AlertTriangle, ArrowLeft, RefreshCw, UserCircle2,
 } from 'lucide-react';
 import { api, type AppUser } from '../api';
 import { useAuth } from '../auth';
@@ -17,10 +17,9 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [showCreate, setShowCreate] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [editUser, setEditUser] = useState<AppUser | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<AppUser | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [busyEmail, setBusyEmail] = useState<string | null>(null);
 
   const fetchUsers = async () => {
     try {
@@ -42,6 +41,21 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
     setRefreshing(false);
   };
 
+  const handleToggleRole = async (u: AppUser) => {
+    if (u.email === currentUser?.email) return; // safety: backend also blocks this
+    const nextRole = u.role === 'admin' ? 'viewer' : 'admin';
+    setBusyEmail(u.email);
+    setError('');
+    try {
+      const updated = await api.updateUserRole(u.email, nextRole);
+      setUsers(prev => prev.map(x => x.email === u.email ? updated : x));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusyEmail(null);
+    }
+  };
+
   return (
     <div className="animate-fade-in">
       <div className="flex items-center gap-4 mb-8">
@@ -53,7 +67,9 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
         </button>
         <div className="flex-1">
           <h2 className="text-2xl font-bold text-white">User Management</h2>
-          <p className="text-sm text-gray-400">Manage who can access the VPN Manager</p>
+          <p className="text-sm text-gray-400">
+            Users appear here after their first Google sign-in. Promote viewers to admins as needed.
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -63,13 +79,6 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
           >
             <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
             Refresh
-          </button>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all shadow-lg shadow-indigo-500/20"
-          >
-            <UserPlus size={16} />
-            Add User
           </button>
         </div>
       </div>
@@ -120,6 +129,11 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
         <div className="flex items-center justify-center py-16">
           <Spinner className="w-6 h-6" />
         </div>
+      ) : users.length === 0 ? (
+        <div className="text-center py-16 text-gray-500">
+          <UserCircle2 size={40} className="mx-auto mb-3 text-gray-600" />
+          <p className="text-sm">No users yet. They'll show up the moment someone signs in with Google.</p>
+        </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-gray-800">
           <table className="w-full">
@@ -127,290 +141,110 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
               <tr className="bg-gray-900/80 border-b border-gray-800">
                 <th className="text-left px-5 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">User</th>
                 <th className="text-left px-5 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Role</th>
-                <th className="text-left px-5 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Created</th>
+                <th className="text-left px-5 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Last Sign-in</th>
                 <th className="text-right px-5 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/50">
-              {users.map(u => (
-                <tr key={u.username} className="group hover:bg-gray-900/40 transition-colors">
-                  <td className="px-5 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg ${u.role === 'admin' ? 'bg-amber-500/10' : 'bg-emerald-500/10'}`}>
-                        {u.role === 'admin' ? <ShieldCheck size={16} className="text-amber-400" /> : <Eye size={16} className="text-emerald-400" />}
+              {users.map(u => {
+                const isSelf = u.email === currentUser?.email;
+                const isBusy = busyEmail === u.email;
+                return (
+                  <tr key={u.email} className="group hover:bg-gray-900/40 transition-colors">
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        {u.picture ? (
+                          <img
+                            src={u.picture}
+                            alt=""
+                            referrerPolicy="no-referrer"
+                            className="w-9 h-9 rounded-full ring-1 ring-gray-700"
+                          />
+                        ) : (
+                          <div className="w-9 h-9 rounded-full bg-gray-800 flex items-center justify-center ring-1 ring-gray-700">
+                            <UserCircle2 size={20} className="text-gray-500" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-white truncate">{u.name || u.email}</span>
+                            {isSelf && (
+                              <span className="text-[10px] font-medium text-indigo-400 bg-indigo-500/15 px-1.5 py-0.5 rounded-full">you</span>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-500 truncate">{u.email}</div>
+                        </div>
                       </div>
-                      <div>
-                        <span className="font-medium text-white">{u.username}</span>
-                        {u.username === currentUser?.username && (
-                          <span className="ml-2 text-[10px] font-medium text-indigo-400 bg-indigo-500/15 px-1.5 py-0.5 rounded-full">you</span>
+                    </td>
+                    <td className="px-5 py-4">
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ring-1 ${
+                        u.role === 'admin'
+                          ? 'bg-amber-500/15 text-amber-400 ring-amber-500/25'
+                          : 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
+                      }`}>
+                        {u.role === 'admin'
+                          ? <><ShieldCheck size={12} /> Admin</>
+                          : <><Eye size={12} /> Viewer</>}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 text-sm text-gray-400">
+                      {u.last_login ? new Date(u.last_login).toLocaleString() : <span className="text-gray-600">never</span>}
+                    </td>
+                    <td className="px-5 py-4 text-right">
+                      <div className="flex items-center gap-2 justify-end">
+                        {!isSelf && (
+                          <>
+                            <button
+                              onClick={() => handleToggleRole(u)}
+                              disabled={isBusy}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg ring-1 transition-all disabled:opacity-50 ${
+                                u.role === 'admin'
+                                  ? 'text-emerald-300 bg-emerald-500/10 ring-emerald-500/25 hover:bg-emerald-500/20'
+                                  : 'text-amber-300 bg-amber-500/10 ring-amber-500/25 hover:bg-amber-500/20'
+                              }`}
+                            >
+                              {isBusy ? <Spinner /> : u.role === 'admin' ? <Eye size={13} /> : <ShieldCheck size={13} />}
+                              {u.role === 'admin' ? 'Demote to viewer' : 'Promote to admin'}
+                            </button>
+                            <button
+                              onClick={() => setConfirmDelete(u)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-300 bg-red-500/10 rounded-lg hover:bg-red-500/20 ring-1 ring-red-500/25 transition-all"
+                            >
+                              <Trash2 size={13} />
+                              Remove
+                            </button>
+                          </>
                         )}
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-5 py-4">
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ring-1 ${
-                      u.role === 'admin'
-                        ? 'bg-amber-500/15 text-amber-400 ring-amber-500/25'
-                        : 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/25'
-                    }`}>
-                      {u.role === 'admin' ? 'Admin' : 'Viewer'}
-                    </span>
-                  </td>
-                  <td className="px-5 py-4 text-sm text-gray-400">
-                    {new Date(u.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-5 py-4 text-right">
-                    <div className="flex items-center gap-2 justify-end opacity-60 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => setEditUser(u)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-300 bg-indigo-500/10 rounded-lg hover:bg-indigo-500/20 ring-1 ring-indigo-500/25 transition-all"
-                      >
-                        <Pencil size={13} />
-                        Edit
-                      </button>
-                      {u.username !== currentUser?.username && (
-                        <button
-                          onClick={() => setConfirmDelete(u.username)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-300 bg-red-500/10 rounded-lg hover:bg-red-500/20 ring-1 ring-red-500/25 transition-all"
-                        >
-                          <Trash2 size={13} />
-                          Delete
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      <CreateUserModal open={showCreate} onClose={() => setShowCreate(false)} onCreated={fetchUsers} />
-      <EditUserModal user={editUser} onClose={() => setEditUser(null)} onUpdated={fetchUsers} />
-      <DeleteUserModal username={confirmDelete} onClose={() => setConfirmDelete(null)} onDeleted={fetchUsers} />
+      <DeleteUserModal
+        user={confirmDelete}
+        onClose={() => setConfirmDelete(null)}
+        onDeleted={fetchUsers}
+      />
     </div>
   );
 }
 
 
-function CreateUserModal({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [role, setRole] = useState('viewer');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-    try {
-      await api.createUser(username, password, role);
-      setUsername('');
-      setPassword('');
-      setRole('viewer');
-      onClose();
-      onCreated();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Create User">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
-          <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-sm text-red-400">{error}</div>
-        )}
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1.5">Username</label>
-          <input
-            type="text"
-            value={username}
-            onChange={e => setUsername(e.target.value)}
-            required
-            className="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500/50 transition-all"
-            placeholder="Enter username"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1.5">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-            minLength={4}
-            className="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500/50 transition-all"
-            placeholder="Enter password"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1.5">Role</label>
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setRole('viewer')}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-                role === 'viewer'
-                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
-                  : 'bg-gray-800/50 border-gray-700 text-gray-400 hover:border-gray-600'
-              }`}
-            >
-              <Eye size={16} />
-              Viewer
-            </button>
-            <button
-              type="button"
-              onClick={() => setRole('admin')}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-                role === 'admin'
-                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-400'
-                  : 'bg-gray-800/50 border-gray-700 text-gray-400 hover:border-gray-600'
-              }`}
-            >
-              <ShieldCheck size={16} />
-              Admin
-            </button>
-          </div>
-        </div>
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2.5 text-sm font-medium text-gray-400 hover:text-white bg-gray-800 rounded-xl border border-gray-700 hover:border-gray-600 transition-all"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={loading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all disabled:opacity-50"
-          >
-            {loading ? <Spinner /> : <UserPlus size={16} />}
-            {loading ? 'Creating...' : 'Create User'}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-
-function EditUserModal({ user, onClose, onUpdated }: { user: AppUser | null; onClose: () => void; onUpdated: () => void }) {
-  const [password, setPassword] = useState('');
-  const [role, setRole] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (user) {
-      setRole(user.role);
-      setPassword('');
-      setError('');
-    }
-  }, [user]);
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-    setLoading(true);
-    setError('');
-    try {
-      const data: { password?: string; role?: string } = {};
-      if (password) data.password = password;
-      if (role !== user.role) data.role = role;
-      await api.updateUser(user.username, data);
-      onClose();
-      onUpdated();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <Modal open={user !== null} onClose={onClose} title={`Edit User: ${user?.username || ''}`}>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        {error && (
-          <div className="p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-sm text-red-400">{error}</div>
-        )}
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1.5">New Password (leave blank to keep)</label>
-          <input
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            className="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500/50 transition-all"
-            placeholder="Enter new password"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1.5">Role</label>
-          <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setRole('viewer')}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-                role === 'viewer'
-                  ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
-                  : 'bg-gray-800/50 border-gray-700 text-gray-400 hover:border-gray-600'
-              }`}
-            >
-              <Eye size={16} />
-              Viewer
-            </button>
-            <button
-              type="button"
-              onClick={() => setRole('admin')}
-              className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${
-                role === 'admin'
-                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-400'
-                  : 'bg-gray-800/50 border-gray-700 text-gray-400 hover:border-gray-600'
-              }`}
-            >
-              <ShieldCheck size={16} />
-              Admin
-            </button>
-          </div>
-        </div>
-        <div className="flex justify-end gap-3 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2.5 text-sm font-medium text-gray-400 hover:text-white bg-gray-800 rounded-xl border border-gray-700 hover:border-gray-600 transition-all"
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            disabled={loading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all disabled:opacity-50"
-          >
-            {loading ? <Spinner /> : <KeyRound size={16} />}
-            {loading ? 'Saving...' : 'Save Changes'}
-          </button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-
-function DeleteUserModal({ username, onClose, onDeleted }: { username: string | null; onClose: () => void; onDeleted: () => void }) {
+function DeleteUserModal({ user, onClose, onDeleted }: { user: AppUser | null; onClose: () => void; onDeleted: () => void }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const handleDelete = async () => {
-    if (!username) return;
+    if (!user) return;
     setLoading(true);
     setError('');
     try {
-      await api.deleteUser(username);
+      await api.deleteUser(user.email);
       onClose();
       onDeleted();
     } catch (e: any) {
@@ -421,17 +255,18 @@ function DeleteUserModal({ username, onClose, onDeleted }: { username: string | 
   };
 
   return (
-    <Modal open={username !== null} onClose={onClose} title="Delete User">
+    <Modal open={user !== null} onClose={onClose} title="Remove User">
       <div className="flex items-start gap-3 mb-5">
         <div className="p-2 bg-red-500/10 rounded-lg mt-0.5">
           <AlertTriangle className="text-red-400" size={20} />
         </div>
         <div>
           <p className="text-sm text-gray-300">
-            Are you sure you want to delete <span className="text-white font-medium">{username}</span>?
+            Remove <span className="text-white font-medium">{user?.name || user?.email}</span>?
           </p>
           <p className="text-sm text-gray-500 mt-1">
-            This user will no longer be able to access the VPN Manager.
+            They will lose access immediately. If they sign in with Google again, they'll be re-created
+            as a viewer.
           </p>
         </div>
       </div>
@@ -454,7 +289,7 @@ function DeleteUserModal({ username, onClose, onDeleted }: { username: string | 
           className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-red-600 hover:bg-red-500 rounded-xl transition-all disabled:opacity-50"
         >
           {loading ? <Spinner /> : <Trash2 size={16} />}
-          {loading ? 'Deleting...' : 'Delete User'}
+          {loading ? 'Removing...' : 'Remove User'}
         </button>
       </div>
     </Modal>

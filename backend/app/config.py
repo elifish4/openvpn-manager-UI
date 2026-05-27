@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings
 from pydantic import BaseModel
-from typing import Optional
 import os
 
 
@@ -21,15 +20,23 @@ class Settings(BaseSettings):
     api_port: int = 8000
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 
-    admin_username: str = "admin"
-    admin_password: str = "changeme"
     jwt_secret: str = "super-secret-change-me-in-production"
     data_dir: str = "/app/data"
     slack_bot_token: str = ""
 
+    # Google SSO
+    google_client_id: str = ""
+    # Comma-separated list of email domains allowed to sign in.
+    # Empty string = allow any Google account.
+    allowed_email_domains: str = ""
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
+
+    def get_allowed_domains(self) -> list[str]:
+        return [d.strip().lower() for d in self.allowed_email_domains.split(",") if d.strip()]
 
     def get_servers(self) -> list[VPNServerConfig]:
         servers = []

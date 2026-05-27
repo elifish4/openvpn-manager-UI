@@ -1,4 +1,4 @@
-import { Download, Trash2, UserCheck, UserX, AlertTriangle, Globe, Split, ArrowRightLeft, Wifi, WifiOff, Clock, ChevronUp, ChevronDown, ChevronsUpDown, Search, X, Unplug } from 'lucide-react';
+import { Download, Trash2, UserCheck, UserX, AlertTriangle, Globe, Split, ArrowRightLeft, Wifi, WifiOff, Clock, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, Search, X, Unplug, Send, Check } from 'lucide-react';
 import { useState, useMemo, useRef } from 'react';
 import type { VPNClient, ClientTraffic } from '../api';
 import { api } from '../api';
@@ -131,11 +131,15 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
   const [tunnelToggle, setTunnelToggle] = useState<{ name: string; current: 'full' | 'split' } | null>(null);
   const [togglingTunnel, setTogglingTunnel] = useState<string | null>(null);
+  const [resendingSlack, setResendingSlack] = useState<string | null>(null);
+  const [slackSent, setSlackSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [search, setSearch] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [page, setPage] = useState(0);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -144,6 +148,7 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
       setSortKey(key);
       setSortDir('asc');
     }
+    setPage(0);
   };
 
   const needle = search.toLowerCase().trim();
@@ -168,6 +173,22 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
     if (needle) list = list.filter(matchesSearch);
     return list;
   }, [clients, needle]);
+
+  const allDisplayed = [...activeClients, ...revokedClients];
+  const totalCount = allDisplayed.length;
+  const isPaginated = pageSize > 0 && totalCount > pageSize;
+  const totalPages = pageSize > 0 ? Math.ceil(totalCount / pageSize) : 1;
+  const safePage = Math.min(page, Math.max(totalPages - 1, 0));
+  const startIdx = pageSize > 0 ? safePage * pageSize : 0;
+  const endIdx = pageSize > 0 ? Math.min(startIdx + pageSize, totalCount) : totalCount;
+  const paginatedActive = pageSize > 0
+    ? activeClients.slice(Math.max(startIdx, 0), Math.min(endIdx, activeClients.length))
+    : activeClients;
+  const revokedStart = Math.max(startIdx - activeClients.length, 0);
+  const revokedEnd = Math.max(endIdx - activeClients.length, 0);
+  const paginatedRevoked = pageSize > 0
+    ? revokedClients.slice(revokedStart, revokedEnd)
+    : revokedClients;
 
   const handleRevoke = async (name: string) => {
     try {
@@ -216,6 +237,20 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
     window.open(api.getDownloadUrl(serverId, name), '_blank');
   };
 
+  const handleResendSlack = async (name: string) => {
+    try {
+      setResendingSlack(name);
+      setError(null);
+      await api.resendSlack(serverId, name);
+      setSlackSent(name);
+      setTimeout(() => setSlackSent(prev => prev === name ? null : prev), 3000);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setResendingSlack(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -242,7 +277,7 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
           ref={searchRef}
           type="text"
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={e => { setSearch(e.target.value); setPage(0); }}
           placeholder="Search clients..."
           className="w-full pl-9 pr-9 py-2 text-sm bg-gray-900/60 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
         />
@@ -269,7 +304,7 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800/50">
-            {activeClients.map(client => (
+            {paginatedActive.map(client => (
               <tr key={client.name} className="group hover:bg-gray-900/40 transition-colors">
                 <td className="px-5 py-4">
                   <div className="flex items-center gap-3">
@@ -342,12 +377,17 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
                       </div>
                     </Tooltip>
                   ) : client.last_seen ? (
-                    <Tooltip text={formatFullDate(client.last_seen)}>
-                      <div className="flex items-center gap-1.5 cursor-default">
-                        <Clock size={12} className="text-gray-500" />
-                        <span className="text-xs text-gray-400">{formatLastSeen(client.last_seen)}</span>
-                      </div>
-                    </Tooltip>
+                    <div>
+                      <Tooltip text={formatFullDate(client.last_seen)}>
+                        <div className="flex items-center gap-1.5 cursor-default">
+                          <Clock size={12} className="text-gray-500" />
+                          <span className="text-xs text-gray-400">{formatLastSeen(client.last_seen)}</span>
+                        </div>
+                      </Tooltip>
+                      {client.last_seen_ip && (
+                        <p className="text-[11px] text-gray-500 mt-0.5 font-mono">{client.last_seen_ip}</p>
+                      )}
+                    </div>
                   ) : (
                     <span className="text-xs text-gray-600">Never</span>
                   )}
@@ -430,6 +470,25 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
                         .ovpn
                       </button>
                     )}
+                    {isAdmin && client.has_ovpn && client.email && (
+                      <button
+                        onClick={() => handleResendSlack(client.name)}
+                        disabled={resendingSlack === client.name || slackSent === client.name}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg ring-1 transition-all disabled:opacity-70 ${
+                          slackSent === client.name
+                            ? 'text-emerald-300 bg-emerald-500/10 ring-emerald-500/25'
+                            : 'text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 ring-sky-500/25'
+                        }`}
+                      >
+                        {resendingSlack === client.name ? (
+                          <><Spinner className="!w-3 !h-3" /> Sending…</>
+                        ) : slackSent === client.name ? (
+                          <><Check size={13} /> Sent</>
+                        ) : (
+                          <><Send size={13} /> Slack</>
+                        )}
+                      </button>
+                    )}
                     {isAdmin && (
                       <button
                         onClick={() => setConfirmRevoke(client.name)}
@@ -443,7 +502,7 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
                 </td>
               </tr>
             ))}
-            {revokedClients.map(client => (
+            {paginatedRevoked.map(client => (
               <tr key={client.name} className="opacity-50">
                 <td className="px-5 py-4">
                   <div className="flex items-center gap-3">
@@ -481,6 +540,52 @@ export function ClientTable({ clients, serverId, loading, onRevoked, onTunnelCha
           </tbody>
         </table>
       </div>
+
+      {totalCount > 0 && (
+        <div className="flex items-center justify-between mt-3 px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-500">Show</span>
+            {[20, 50, 0].map(size => (
+              <button
+                key={size}
+                onClick={() => { setPageSize(size); setPage(0); }}
+                className={`px-2 py-0.5 text-xs font-medium rounded transition-all ${
+                  pageSize === size
+                    ? 'bg-indigo-500/20 text-indigo-400 ring-1 ring-indigo-500/30'
+                    : 'text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                {size === 0 ? 'All' : size}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-gray-500">
+              {isPaginated
+                ? `${startIdx + 1}–${endIdx} of ${totalCount}`
+                : `${totalCount} client${totalCount !== 1 ? 's' : ''}`}
+            </span>
+            {isPaginated && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage(p => Math.max(p - 1, 0))}
+                  disabled={safePage === 0}
+                  className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-all disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  onClick={() => setPage(p => Math.min(p + 1, totalPages - 1))}
+                  disabled={safePage >= totalPages - 1}
+                  className="p-1 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-all disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-gray-400"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <Modal
         open={confirmRevoke !== null}

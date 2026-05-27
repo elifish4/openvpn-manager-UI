@@ -1,14 +1,24 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
 
-interface AuthUser {
-  username: string;
+export interface AuthUser {
+  email: string;
+  name: string | null;
+  picture: string | null;
   role: string;
   token: string;
 }
 
+export interface AuthConfig {
+  google_client_id: string;
+  allowed_domains: string[];
+}
+
 interface AuthContextType {
   user: AuthUser | null;
-  login: (username: string, password: string) => Promise<void>;
+  config: AuthConfig | null;
+  configLoading: boolean;
+  configError: string | null;
+  googleLogin: (credential: string) => Promise<void>;
   logout: () => void;
   isAdmin: boolean;
 }
@@ -26,6 +36,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
+  const [config, setConfig] = useState<AuthConfig | null>(null);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/auth/config')
+      .then(res => {
+        if (!res.ok) throw new Error(`Failed to load auth config: HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: AuthConfig) => setConfig(data))
+      .catch(err => setConfigError(err.message))
+      .finally(() => setConfigLoading(false));
+  }, []);
+
   useEffect(() => {
     if (user) {
       localStorage.setItem(TOKEN_KEY, JSON.stringify(user));
@@ -39,22 +64,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetch('/api/auth/me', {
       headers: { Authorization: `Bearer ${user.token}` },
     }).then(res => {
-      if (!res.ok) setUser(null);
+      if (!res.ok) {
+        setUser(null);
+      } else {
+        // Pull fresh role/name/picture from the server so admin demotion takes effect on reload.
+        res.json().then(fresh => {
+          setUser(prev => prev ? { ...prev, role: fresh.role, name: fresh.name, picture: fresh.picture } : prev);
+        }).catch(() => { /* keep cached */ });
+      }
     }).catch(() => setUser(null));
   }, []);
 
-  const login = async (username: string, password: string) => {
-    const res = await fetch('/api/auth/login', {
+  const googleLogin = async (credential: string) => {
+    const res = await fetch('/api/auth/google', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ credential }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail || 'Login failed');
+      throw new Error(body.detail || 'Sign-in failed');
     }
     const data = await res.json();
-    const newUser = { username: data.username, role: data.role, token: data.token };
+    const newUser: AuthUser = {
+      email: data.email,
+      name: data.name ?? null,
+      picture: data.picture ?? null,
+      role: data.role,
+      token: data.token,
+    };
     localStorage.setItem(TOKEN_KEY, JSON.stringify(newUser));
     setUser(newUser);
   };
@@ -65,7 +103,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAdmin: user?.role === 'admin' }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        config,
+        configLoading,
+        configError,
+        googleLogin,
+        logout,
+        isAdmin: user?.role === 'admin',
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

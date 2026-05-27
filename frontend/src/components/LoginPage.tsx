@@ -1,23 +1,25 @@
-import { useState, type FormEvent } from 'react';
-import { Shield, LogIn, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { Shield, AlertCircle } from 'lucide-react';
+import { GoogleLogin, GoogleOAuthProvider } from '@react-oauth/google';
 import { useAuth } from '../auth';
 import { Spinner } from './Spinner';
 
 export function LoginPage() {
-  const { login } = useAuth();
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const { googleLogin, config, configLoading, configError } = useAuth();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const handleSuccess = async (credential: string | undefined) => {
+    if (!credential) {
+      setError('Google did not return a credential');
+      return;
+    }
     setError('');
     setLoading(true);
     try {
-      await login(username, password);
+      await googleLogin(credential);
     } catch (err: any) {
-      setError(err.message || 'Login failed');
+      setError(err.message || 'Sign-in failed');
     } finally {
       setLoading(false);
     }
@@ -31,53 +33,61 @@ export function LoginPage() {
             <Shield className="text-indigo-400" size={32} />
           </div>
           <h1 className="text-2xl font-bold text-white">OpenVPN Manager</h1>
-          <p className="text-gray-500 text-sm mt-1">Sign in to manage your VPN servers</p>
+          <p className="text-gray-500 text-sm mt-1">Sign in with your Google account</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-5">
-          {error && (
-            <div className="flex items-center gap-2 p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-sm text-red-400">
-              <AlertCircle size={16} className="shrink-0" />
-              {error}
+        <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 space-y-5">
+          {(error || configError) && (
+            <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/25 rounded-xl text-sm text-red-400">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" />
+              <span>{error || configError}</span>
             </div>
           )}
 
-          <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-400 mb-1.5">Username</label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
-              required
-              autoFocus
-              className="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500/50 transition-all"
-              placeholder="Enter username"
-            />
-          </div>
+          {configLoading ? (
+            <div className="flex items-center justify-center py-6">
+              <Spinner />
+            </div>
+          ) : !config?.google_client_id ? (
+            <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/25 rounded-xl text-sm text-amber-300">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" />
+              <span>
+                Google SSO is not configured. Set <code className="font-mono">GOOGLE_CLIENT_ID</code> on the backend
+                (or <code className="font-mono">googleClientId</code> in your Helm values) and reload.
+              </span>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              {loading ? (
+                <div className="flex items-center gap-2 text-gray-400 text-sm py-3">
+                  <Spinner /> Signing in...
+                </div>
+              ) : (
+                <GoogleOAuthProvider clientId={config.google_client_id}>
+                  <GoogleLogin
+                    onSuccess={(resp) => handleSuccess(resp.credential)}
+                    onError={() => setError('Google sign-in failed')}
+                    theme="filled_black"
+                    shape="pill"
+                    size="large"
+                    text="signin_with"
+                  />
+                </GoogleOAuthProvider>
+              )}
 
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-400 mb-1.5">Password</label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-              className="w-full px-4 py-2.5 bg-gray-800/50 border border-gray-700 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 focus:border-indigo-500/50 transition-all"
-              placeholder="Enter password"
-            />
-          </div>
+              {config.allowed_domains.length > 0 && (
+                <p className="text-xs text-gray-500 text-center pt-2">
+                  Restricted to: {config.allowed_domains.map(d => `@${d}`).join(', ')}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50"
-          >
-            {loading ? <Spinner /> : <LogIn size={16} />}
-            {loading ? 'Signing in...' : 'Sign In'}
-          </button>
-        </form>
+        <p className="text-center text-xs text-gray-600 mt-6">
+          New users start as <span className="text-emerald-400">read-only</span>.
+          An admin can promote you on the Admin page.
+        </p>
       </div>
     </div>
   );

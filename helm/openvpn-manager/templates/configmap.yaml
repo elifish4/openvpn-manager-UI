@@ -21,3 +21,5 @@ data:
   API_HOST: "0.0.0.0"
   API_PORT: {{ .Values.backend.port | quote }}
   CORS_ORIGINS: {{ .Values.corsOrigins | quote }}
+  GOOGLE_CLIENT_ID: {{ .Values.googleSso.clientId | default "" | quote }}
+  ALLOWED_EMAIL_DOMAINS: {{ .Values.googleSso.allowedEmailDomains | default "" | quote }}

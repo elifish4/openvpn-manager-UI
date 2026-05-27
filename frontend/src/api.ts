@@ -28,6 +28,7 @@ export interface VPNClient {
   bytes_received: number;
   bytes_sent: number;
   last_seen: string | null;
+  last_seen_ip: string | null;
   email: string | null;
   first_name: string | null;
   last_name: string | null;
@@ -46,9 +47,12 @@ export interface TrafficResponse {
 }
 
 export interface AppUser {
-  username: string;
+  email: string;
+  name: string | null;
+  picture: string | null;
   role: string;
   created_at: string;
+  last_login: string | null;
 }
 
 export interface AuditEntry {
@@ -64,6 +68,16 @@ export interface AuditEntry {
 export interface AuditLogResponse {
   logs: AuditEntry[];
   total: number;
+}
+
+export interface BulkCreateResult {
+  server_id: number;
+  server_name: string;
+  client_name: string;
+  success: boolean;
+  error: string | null;
+  slack_sent: boolean;
+  slack_error: string | null;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -101,6 +115,12 @@ export const api = {
       body: JSON.stringify({ first_name: firstName, last_name: lastName, email, use_password: usePassword, password, send_slack: sendSlack }),
     }),
 
+  bulkCreateClient: (serverIds: number[], firstName: string, lastName: string, email: string, usePassword: boolean = false, password?: string, sendSlack: boolean = true) =>
+    request<{ results: BulkCreateResult[] }>('/clients/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ server_ids: serverIds, first_name: firstName, last_name: lastName, email, use_password: usePassword, password, send_slack: sendSlack }),
+    }),
+
   disconnectClient: (serverId: number, clientName: string) =>
     request<{ success: boolean; message: string }>(`/servers/${serverId}/clients/${clientName}/disconnect`, {
       method: 'POST',
@@ -117,6 +137,11 @@ export const api = {
       body: JSON.stringify({ tunnel_mode: tunnelMode }),
     }),
 
+  resendSlack: (serverId: number, clientName: string) =>
+    request<{ sent: boolean }>(`/servers/${serverId}/clients/${clientName}/resend-slack`, {
+      method: 'POST',
+    }),
+
   getDownloadUrl: (serverId: number, clientName: string) => {
     const auth = getAuthHeader();
     const token = auth.Authorization?.replace('Bearer ', '') || '';
@@ -126,20 +151,14 @@ export const api = {
   // Admin: User Management
   getUsers: () => request<AppUser[]>('/admin/users'),
 
-  createUser: (username: string, password: string, role: string) =>
-    request<AppUser>('/admin/users', {
-      method: 'POST',
-      body: JSON.stringify({ username, password, role }),
-    }),
-
-  updateUser: (username: string, data: { password?: string; role?: string }) =>
-    request<AppUser>(`/admin/users/${username}`, {
+  updateUserRole: (email: string, role: string) =>
+    request<AppUser>(`/admin/users/${encodeURIComponent(email)}`, {
       method: 'PATCH',
-      body: JSON.stringify(data),
+      body: JSON.stringify({ role }),
     }),
 
-  deleteUser: (username: string) =>
-    request<{ message: string }>(`/admin/users/${username}`, {
+  deleteUser: (email: string) =>
+    request<{ message: string }>(`/admin/users/${encodeURIComponent(email)}`, {
       method: 'DELETE',
     }),
 

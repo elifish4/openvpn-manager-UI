@@ -31,12 +31,12 @@ frontend:
 ingress:
   enabled: true
   className: internal-nginx
-  host: vpn-manager.<your_domain>.com
+  host: vpn-manager.agorareal.com
   annotations: {}
   tls: []
   #  - secretName: vpn-manager-tls
   #    hosts:
-  #      - vpn-manager.<your_domain>.com
+  #      - vpn-manager.agorareal.com
 
 # SSH private keys for connecting to VPN servers.
 # Each key here becomes a file in /app/keys/<name>.pem mounted into the backend pod.
@@ -89,9 +89,23 @@ vpnServers:
 
 corsOrigins: "*"
 
-admin:
-  username: "admin"
-  password: "changeme"
+# Google SSO settings.
+# Get a Web Application OAuth Client ID from
+#   Google Cloud Console > APIs & Services > Credentials > Create Credentials > OAuth client ID
+# Authorized JavaScript origins must include the URL the SPA is served from
+# (e.g. https://vpn-manager.agorareal.com).
+googleSso:
+  # Required. Google OAuth Web Client ID (looks like "...apps.googleusercontent.com").
+  # NOTE: only the Client ID is needed. We use Google Identity Services
+  # (browser ID-token flow), so no Client Secret is required server-side.
+  clientId: "177616890587-lp0dd8plu0a007lfebcjjpk27c69dj5f.apps.googleusercontent.com"
+  # Optional comma-separated list of email domains allowed to sign in.
+  # Empty = any Google account allowed. The first user to ever sign in becomes
+  # admin automatically; everyone else starts as 'viewer'.
+  allowedEmailDomains: "agorareal.com"
+
+auth:
+  # Used to sign session JWTs. Generate with: openssl rand -hex 32
   jwtSecret: "change-this-to-a-random-string"
   slackBotToken: ""
 
